@@ -96,19 +96,52 @@ def retrieve_for_case(
       - "layers": dict[str, str]  (per-layer evidence: short_term/long_term/
                                    episodic/semantic)
       - "budget": dict  (the breakdown from assemble_context)
-
-    Hints:
-      * Build short_term from case["fixture_messages"] if present, else from
-        the matching user/thread messages in data/sessions.json, plus
-        extra_messages. E01 has no fixture — it uses thread minh-s1.
-      * Decide which durable layers to fetch from case["expected_layer"] (or
-        case["retrieve_layers"] for "mixed"), then call
-        memory.retrieve_long_term / retrieve_episodic / retrieve_semantic.
-      * Keep user_id and thread_id from the loaded case.
-      * Finish with memory.assemble_context(layers).
     """
-    _ = (memory, case, extra_messages, settings, ShortTermMemory)
-    raise NotImplementedError("BONUS TODO: run student retrieval for the loaded case")
+    expected_layer = case.get("expected_layer", "")
+    query = case.get("query", "")
+    user_id = case.get("user_id", "")
+    thread_id = case.get("thread_id", "")
+
+    layers: dict[str, str] = {}
+
+    stm = ShortTermMemory()
+    if "fixture_messages" in case:
+        for msg in case["fixture_messages"]:
+            stm.append(msg["role"], msg["content"])
+    else:
+        dataset = load_dataset()
+        for u in dataset.get("users", []):
+            if u.get("user_id") == user_id:
+                for sess in u.get("sessions", []):
+                    if sess.get("thread_id") == thread_id:
+                        for m in sess.get("messages", []):
+                            stm.append(m["role"], m["content"])
+    for m in extra_messages:
+        stm.append(m.get("role", "user"), m.get("content", ""))
+
+    retrieve_layers = case.get("retrieve_layers")
+    if not retrieve_layers:
+        if expected_layer == "mixed":
+            retrieve_layers = ["long_term", "semantic"]
+        else:
+            retrieve_layers = [expected_layer]
+
+    for layer in retrieve_layers:
+        if layer == "short_term":
+            layers["short_term"] = stm.render()
+        elif layer == "long_term" and user_id and thread_id:
+            layers["long_term"] = memory.retrieve_long_term(user_id=user_id, thread_id=thread_id, query=query)
+        elif layer == "episodic" and user_id:
+            layers["episodic"] = memory.retrieve_episodic(user_id=user_id, query=query)
+        elif layer == "semantic":
+            layers["semantic"] = memory.retrieve_semantic(graph_id=settings.semantic_graph_id, query=query)
+
+    merged_context, budget = memory.assemble_context(layers)
+    return {
+        "merged_context": merged_context,
+        "layers": layers,
+        "budget": budget,
+    }
 
 
 def main() -> None:
